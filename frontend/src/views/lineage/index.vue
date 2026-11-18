@@ -1,7 +1,9 @@
 <template>
   <section class="page" data-module="lineage">
     <header class="page-head">
-      <div><h2>数据血缘追踪</h2><p class="page-desc">维护血缘关系，围绕关系编号、上游节点、下游节点、来源字段做登记、筛选与状态流转。</p></div>
+      <div><h2>数据血缘追踪</h2><p class="page-desc">维护血缘关系，围绕关系编号、上游节点、下游节点、来源字段做登记、筛选与状态流转。血缘读取复用转换节点同一字段投影版本，可用标记与输出目标口径一致。</p>
+        <p class="projection-tag" data-testid="projection-version" v-if="graph.projection_version">字段投影版本 v{{ graph.projection_version }}（{{ graph.projection_mode === 'latest' ? '提交时刻最新版本' : '读取开始冻结版本' }}）</p>
+      </div>
       <div class="page-actions">
         <button class="btn primary" type="button" data-testid="open-create" @click="openCreate">登记血缘关系</button>
         <button class="btn" type="button" data-testid="export" @click="exportRows">导出关系清单</button>
@@ -37,6 +39,19 @@
         </div>
       </form>
     </div>
+    <section v-if="graph.checks?.length" class="relation-panel" data-testid="lineage-checks">
+      <h3>节点关系核对记录（按关系版本写入，与转换列表/拓扑详情同一投影版本 v{{ graph.projection_version }}）</h3>
+      <table class="data-table">
+        <thead><tr><th>节点编号</th><th>可用标记</th><th>输入来源</th><th>输出目标</th><th>关系版本</th><th>核对结果</th></tr></thead>
+        <tbody>
+          <tr v-for="c in graph.checks" :key="c.关系版本" :data-check-result="c.核对结果">
+            <td>{{ c.节点编号 }}</td><td>{{ c.可用标记 ? '可用' : '不可用' }}</td>
+            <td>{{ c.输入来源 }}</td><td>{{ c.输出目标 }}</td><td>{{ c.关系版本 }}</td>
+            <td>{{ c.核对结果 }}<span v-if="c.异常摘要">：{{ c.异常摘要 }}</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
     <footer class="page-foot"><span>{{ graph.nodes.length }} 个节点</span></footer>
   </section>
 </template>
@@ -49,7 +64,7 @@ const actions = ["记录关系", "验证关系", "归档关系"]
 const statuses = ["草稿", "已记录", "已验证", "已归档"]
 const STATUS_COLORS: Record<string,string> = { '草稿':'#e2e8f0','待校验':'#fef3c7','已启用':'#d1fae5','已停用':'#fee2e2' }
 const nodeColor = (s: string) => STATUS_COLORS[s] || '#e2e8f0'
-const graph = reactive<{nodes: any[], edges: any[]}>({ nodes: [], edges: [] })
+const graph = reactive<Record<string, any>>({ nodes: [], edges: [], checks: [] })
 const nodePos = ref<Record<number,{x:number;y:number}>>({})
 const selectedNode = ref<any>(null)
 const detailFields = computed(() => columns.filter((f: string) => !['id','name','label','status'].includes(f)))
@@ -68,7 +83,15 @@ function layout(nodes: any[]) {
 function selectNode(node: any) { selectedNode.value = selectedNode.value?.id === node.id ? null : node }
 function startDrag(e: MouseEvent, node: any) { dragNode = node; const onMove = (ev: MouseEvent) => { if(!dragNode) return; nodePos.value[node.id] = { x: ev.offsetX, y: ev.offsetY } }; const onUp = () => { dragNode = null; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }; document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp) }
 async function reload() {
-  try { const res = await request(ENDPOINT); const data = await res.json(); graph.nodes = data.nodes || []; graph.edges = data.edges || []; layout(graph.nodes) } catch(e) { errorMessage.value = '加载失败' }
+  try {
+    const res = await request(ENDPOINT)
+    const data = await res.json()
+    // 血缘整体接收同一投影版本：节点、边、转换节点核对记录与异常清单。
+    Object.assign(graph, data)
+    graph.nodes = data.nodes || []
+    graph.edges = data.edges || []
+    layout(graph.nodes)
+  } catch(e) { errorMessage.value = '加载失败' }
 }
 async function runAction(action: string, node: any) {
   try { await request(`${ENDPOINT}/${node.id}/actions`, { method: 'POST', body: JSON.stringify({ action }) }); await reload() } catch(e) { errorMessage.value = '操作失败' }

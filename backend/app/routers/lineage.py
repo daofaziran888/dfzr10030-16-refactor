@@ -1,21 +1,25 @@
-"""数据血缘追踪 DAG 拓扑接口：返回节点、连线图结构。"""
+"""数据血缘追踪 DAG 拓扑接口：返回节点、连线图结构。
+
+血缘读取复用转换节点字段投影的同一版本，并暴露按关系版本落库的
+节点关系核对记录与依赖异常清单。
+"""
 from __future__ import annotations
 
 import csv
 import io
-import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
+from app.schemas import ActionPayload, ActionResult, EntryPayload
 from app.services.lineage import LineageService
 
 router = APIRouter(prefix="/api/lineage", tags=["数据血缘追踪"])
 service = LineageService()
 LIST_FIELDS = ["关系编号", "上游节点", "下游节点", "来源字段", "目标字段", "转换说明", "采集批次", "关系版本"]
 STATUSES = ["草稿", "已记录", "已验证", "已归档"]
+PROJECTION_MODES = ("frozen", "latest")
 
 
 def csv_cell(value: Any) -> str:
@@ -25,22 +29,47 @@ def csv_cell(value: Any) -> str:
     return '"' + text.replace('"', '""') + '"'
 
 
+def _normalize_mode(mode: str) -> str:
+    mode = (mode or "frozen").lower()
+    if mode not in PROJECTION_MODES:
+        raise HTTPException(status_code=400, detail=f"投影读取模式仅支持：{'、'.join(PROJECTION_MODES)}")
+    return mode
+
+
 @router.get("")
-def get_graph() -> dict[str, Any]:
-    """返回节点与边组成的 DAG 图数据。"""
-    return service.get_graph()
+def get_graph(mode: str = "frozen") -> dict[str, Any]:
+    """返回血缘节点、边及同一投影版本的转换节点核对数据。"""
+    return service.get_graph(mode=_normalize_mode(mode))
+
+
+@router.get("/checks")
+def get_checks(node: str | None = None) -> dict[str, Any]:
+    """血缘服务读取依赖异常清单，按关系版本回查节点关系核对记录。"""
+    return service.get_checks(node_code=node)
 
 
 @router.get("/export")
 def export_entries() -> StreamingResponse:
-    nodes, edges = service.raw_data()
+    graph = service.get_graph()
+    nodes, edges = graph["nodes"], graph["edges"]
+    checks = graph.get("checks", [])
     buf = io.StringIO(newline="")
     writer = csv.writer(buf)
     writer.writerow(["type", "id", "name", "from", "to", "label", "status"])
     for node in nodes:
-        writer.writerow(["node", node.get("id",""), csv_cell(node.get("name","")), "", "", "", node.get("status","")])
+        writer.writerow(["node", node.get("id", ""), csv_cell(node.get("name", "")), "", "", "", node.get("status", "")])
     for edge in edges:
-        writer.writerow(["edge", "", "", edge.get("from",""), edge.get("to",""), edge.get("label",""), ""])
+        writer.writerow(["edge", "", "", edge.get("from", ""), edge.get("to", ""), edge.get("label", ""), ""])
+    # 关系核对记录与 DAG 导出于同一读取事务，落库与导出口径一致。
+    writer.writerow([])
+    writer.writerow(["check", "节点编号", "可用标记", "输入来源", "输出目标", "关系版本", "核对结果", "投影版本"])
+    for item in checks:
+        writer.writerow([
+            "check", csv_cell(item.get("节点编号", "")), item.get("可用标记", ""),
+            csv_cell(item.get("输入来源", "")), csv_cell(item.get("输出目标", "")),
+            csv_cell(item.get("关系版本", "")), item.get("核对结果", ""),
+            item.get("投影版本", ""),
+        ])
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": "attachment; filename=lineage.csv"})
 

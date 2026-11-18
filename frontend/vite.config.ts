@@ -19,8 +19,10 @@ export default defineConfig({
     // 关掉自动打开页面：起服务时只打印地址，不拉起浏览器
     open: false,
     strictPort: false,
+    // 仅代理真正的后端接口 /api 与 /api/*；
+    // 用路径边界正则避免 /apiclient 这类以 /api 为前缀的前端路由被误代理到后端。
     proxy: {
-      '/api': {
+      '^/api(?:/|$)': {
         target: proxyTarget,
         changeOrigin: true,
       },
